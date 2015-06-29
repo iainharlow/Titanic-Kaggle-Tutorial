@@ -1,0 +1,931 @@
+---
+    title: "Predicting Titanic Survival from Passenger Records: An example of Mchine learning in R."
+author: "Iain Harlow"
+date: 
+output:
+    html_document:
+    keep_md: yes
+pdf_document: default
+---
+    
+    ___
+### Synopsis
+
+Machine-learning driven predictions of Titanic Disaster survival likelihood, based on passenger records. This kaggle 'contest' is non-competitive and so I'll go step-by-step through my approach in the hope that you find it useful or interesting!
+
+### Approach
+
+Glancing through the available data and the event [background](http://en.wikipedia.org/wiki/Sinking_of_the_RMS_Titanic) suggests a few things straight away:
+
+- Certain features in the data are likely to be very strong predictors of survival - class, sex and age in particular.
+- But the interaction of these features may also be very important: For example, the survival of male and female passengers may show different relationships with age or class.
+- We have a relatively small dataset, and a fairly high number of predictors, so overfitting is something we shoudl definitely be cautious about.
+
+Let's use this dataset to play with some different classification algorithms in R. We can compare their performance to get a sense of how they compare, and perhaps build a final model incorporating more than one (i.e. "stack" the models).
+
+We'll also perform some simple munging or feature engineering to extract as clean and relevant a set of predictors as possible. This dataset is a nice one to demonstrate this, since we have a reasonable intuition about what each of the features actually reflects and how it might affect the model (often this can be more ambiguous).
+
+### Benchmarking Performance
+
+First off, let's take a look at the leaderboard to get an idea of benchmark performance. When you download the zip file from the [leaderboard page](https://www.kaggle.com/c/titanic-gettingStarted/leaderboard) you get a list of every entry made *that improved on the submitters previous score*. So the scores here are going to be a biased reflection of how people's models are performing out-of-sample. We'll also mark the 'benchmark' models on here, too:
+
+```{r}
+improvements <- read.csv("titanic-gettingStarted_public_leaderboard.csv",stringsAsFactors=FALSE)
+
+d<-data.frame(model=c("All Perish","Gender","Random Forest","Gen/Price/Class"),
+              score=c(0.62679,0.76555,0.77512,0.77990))
+
+ggplot(improvements, aes(x=Score)) +
+    geom_histogram(binwidth=1/200) +
+    xlim(0.6, 0.9) +
+    ylim(0,3000) +
+    ggtitle("Titanic Prediction Accuracies (biased sample of 'best' scores)") + 
+    theme(plot.title = element_text(size=20, vjust=1.5)) +
+    geom_vline(data=d, 
+               mapping=aes(xintercept=score), 
+               color="blue") +
+    geom_text(data=d, 
+              mapping=aes(x=score, y=1100, label=model), 
+              size=4, 
+              colour="blue",
+              angle=90, 
+              vjust=-0.1, 
+              hjust=0)
+```
+
+This gives us a pretty good idea of how well we can expect our model to do. The absolute baseline is provided by the "All Perish" model - that is, just pick the most likely outcome (Survival = 0) and apply it to all passengers. This requires no machine learning other than to estimate which outcome is more likely from the training set.
+
+Clearly, it's possible to do quite a bit better, and get a score in the 0.7 to 0.85 range. A very simple Gender model (split the passengers by gender before applying the most likely outcome - females survive, males do not) scores around 76.5%. Adding in ticket price and class gets the classification accuracy up to 78%, while a random forest on the numerical and factor variables scores similarly at 77.5%. These also coincide with the most obvious peaks in the histogram.
+
+We can safely ignore any scores near zero (probably an error creating the CSV file) or near one (probably just looking up the true outcomes, which are readily available on Wikipedia). In fact, it seems like the best we might hope for would be around 80%, and certainly no higher than 85%. It's worth remembering, too, that with near-unlimited submissions it's quite possible to overfit to the visible part of the test data, so many of those 80%+ models could perform quite porrly on the hidden half of the test data (again, assuming they haven't cheated and looked it up!).
+
+Let's also take a look just at each team's first entry - this will give a less severely biased impression of how well the models perform (and in the opposite direction) - in other words a reflection of how people's simplest/first ideas work out:
+
+```{r}
+firsts <- improvements[!duplicated(improvements$TeamName),]
+
+ggplot(firsts, aes(x=Score)) +
+    geom_histogram(binwidth=1/200) +
+    xlim(0.6, 0.9) +
+    ylim(0,1000) +
+    ggtitle("Titanic Prediction Accuracies (initial scores only)") + 
+    theme(plot.title = element_text(size=20, vjust=1.5)) +
+    geom_vline(data=d, 
+               mapping=aes(xintercept=score), 
+               color="blue")
+```
+
+We see the same three peaks as before, but relatively few initial attempts get over 78%. Quite a few score lower than the very simple "Gender" benchmark, which is characteristic of overfitting to the training data.
+
+So overall, it looks like a model scoring 78-80% is probably doing pretty well. If we submit several sufficently distinct models, we're likely to get a few scores above 80% just through chance, but 78-80% is still likely to be the range we'll get for the unseen data.
+
+Finally, since a simple gender split gives 77%, scores below ~75% for more complex models are likely a warning sign that we're overfitting. The random forest benchmark is also quite useful, as random forests tend to be a fairly powerful method for extracting relationships between the features and outcome (if a little hard to interpret and prone to overfitting). This random forest gives us an idea of how much we can extract with a powerful model simply by using the features as they are. In the next section we'll take a look at the features we have available, and assess them one-by-one.
+
+### Features
+
+A good approach I think, especially when we have a reasonably limited and interpretable feature set, is to go through them one by one and consider how useful or predictive we'd expect them to be. We'll also have a think about how to manipulate or reformat them to perhaps improve their predictive power, or even discard some at this stage.
+
+#### Pclass
+The class of the passenger is likely to be a pretty useful predictor for a couple of reasons. Firstly, it gives us some information about where on the ship they probably were when the collision occured (since this was at night): Upper class cabins were generally higher on the ship, further from the early flooding and closer to the lifeboats. Secondly, survival on the Titanic seems to have been influenced by social as well as physical factors - "women and children first" seems to have applied to a certain extent in allocating lifeboat space, and class may also have had an influence on behaviour. Similarly, it's possible to imagine interactions with other factors such as age or gender. There are three levels of class, so we have two choices - encode it as a numeric variable (i.e. assume 2nd class is equally 'different' to 1st and 3rd) or encode it as two dummy variables. The latter uses an extra degree of freedom to allow 2nd class to be more similar to one of the other two, for example if 1st and 2nd class had similar outcomes but 3rd class was very different. That seems plausible to me, so I'll try that approach (at the cost of slightly increasing the model complexity and overfitting risk).
+
+#### Name
+We wouldn't expect the name of the passenger itself to predict their survival. But there are a couple of things here we could usefully extract. Firstly, it might come in handy later on when we're trying to group passengers travelling together. Secondly, the name includes a title (e.g. Master, Miss, Sir, Dr, Mrs...). These might be useful when we're trying to impute missing data such as age.
+
+#### Sex/Gender
+Clearly a very important variable to include in the model, and since it's only two levels we don't need to manipulate it.
+
+#### Age
+Also likely to be very important, but finding an appropriate (probably nonlinear) mapping between age and survival might be the crucial task here. It may be worth trying to transform the number in a way that de-emphasises differences at the higher end of the scale, i.e. make 5 more different from 20 than 20 is from 35. There are also some missing values here - one simple approach would be to replace them with the mean, but we can do slightly better by using the title from the "Name" feature to give us a clue to whether the passenger is a child or an adult.
+
+#### SibSp
+This variable encodes the number of siblings and/or spouse travelling with the passenger. It's an overloaded variable, so we'll probably want to use the passenger age to tease apart spouse/sibling relationships. It may have predictive power on its own, but we can probably isolate a couple of useful things from this: The size of the family this person traveled with - a single man might react differently to the sinking than a childless husband or a father for example - and the survival (if known) of other members of their travelling party.
+
+#### Parch
+A similar overloaded variable encoding the number of parents and/or children travelling with the passenger. We'll try to combine this with the SibSp variable to find and relate families.
+
+#### Ticket
+A code with apparently little unique and useful information in itself. I think the best use of this information will be to find passengers travelling together, since their survival chances are probably linked. There's also apparently a different ticket format for those travelling as White Star Line staff (but not crew) - but on the whole I doubt that will buy us enough extra to be worth including.
+
+#### Fare
+Many models - including two of the benchmarks - use the fare as a predictor, but I'm skeptical. It seems to be a function of class and group size (since the listed ticket price covers everyone travelling under that ticket). Since we'll have both of those variables in our model anyway, there's not too much extra it can buy us. At a push, perhaps it will give us an extra clue about where in the ship someone was travelling - we can investigate that later.
+
+#### Cabin
+This seems like it should be a very useful variable, as it gives us some sense of where, physically, a passenger was on the ship. It's limited to just 23% of the passengers in the training set, but for those passengers we can extract z-axis (deck letter), x-axis (port or starboard, denoted by odd/even numbers) and y-axis (size of number) information. This could be relevant since the ship was struck on the starboard side, listed unevenly, and also sank bow first. 
+
+A check of the [Titanic deck plans](http://www.encyclopedia-titanica.org/titanic-deckplans/) allows us to map out the position of each cabin precisely. Even if we just use the intuition above (port/starboard is odd/even, deck is letter, large/small numbers are at different ends of the ship) it turns out that's pretty accurate for the most part.
+
+One major limitation to the cabin information is that while it's likely to be most useful for 3rd class passengers - those near where the iceberg struck are likely to have found it harder to escape as the passenger areas flooded - the majority of cabin records are for upper class passengers. Still, we'll try including those 3 directional axes as factors and perhaps even try an imputation for the missing data based on the location of cabins of each class.
+
+#### Embarked
+I'm choosing to ditch this data. It may have some relationship with location on the ship, if cabins were unassigned before boarding, but that's pretty speculative. I'm not convinced this variable is going to add enough real (and unique) information to justify the added complexity.
+
+#### Overall
+We're looking, then, at the following predictors:
+- Age
+- Sex
+- Class (2 dummy variables)
+- 
+
+```{r}
+setwd("C:/Users/Iain/Desktop/R/Titanic")
+
+suppressWarnings(suppressMessages(library(grid))) # For plotting 
+suppressWarnings(suppressMessages(library(gridExtra))) # For plotting 
+suppressWarnings(suppressMessages(library(neuralnet))) # Neural Network Models
+suppressWarnings(suppressMessages(library(nnet))) # Neural Network Models
+suppressWarnings(suppressMessages(library(plyr))) # Working with tidy data
+suppressWarnings(suppressMessages(library(dplyr))) # Working with tidy data
+suppressWarnings(suppressMessages(library(reshape2))) # Reshaping tables
+suppressWarnings(suppressMessages(library(scales))) # For plotting 
+suppressWarnings(suppressMessages(library(ggplot2))) # For plotting
+suppressWarnings(suppressMessages(library(stringr))) # For manipulating strings
+suppressWarnings(suppressMessages(library(adabag))) # For boosting 
+suppressWarnings(suppressMessages(library(gbm))) # For boosting 
+suppressWarnings(suppressMessages(library(randomForest))) # For boosting 
+suppressWarnings(suppressMessages(library(caret))) # For training/selecting models 
+
+
+
+rm(list = setdiff(ls(),c("trainraw","testraw")))
+
+if (!exists("testraw")){
+    print("Reading in data... just a moment")
+    testraw <- read.csv("test.csv",stringsAsFactors=FALSE)
+    print("Finished reading data.")
+}
+
+if (!exists("trainraw")){
+    print("Reading in data... just a moment")
+    trainraw <- read.csv("train.csv",stringsAsFactors=FALSE)
+    print("Finished reading data.")
+}
+
+train <- tbl_df(trainraw)
+n <- nrow(train)
+train$Set <- "train"
+test <- tbl_df(testraw)
+test$Set <- "test"
+test$Survived <- rep(2,nrow(test))
+full <- rbind(test,train)
+
+# Get title, ticket #, surname, deck, cabin #:
+full$Title <- gsub(".*, ","",full$Name)
+full$Title <- gsub("\\..*","",full$Title)
+full$Ticket <- factor(full$Ticket,levels=sort(unique(full$Ticket)))
+full$Surname <- gsub(",.*","",full$Name)
+full$Deck <- as.factor(substr(gsub("[0-9].*","",full$Cabin),1,1))
+#full$Cabinnum <- as.numeric(gsub("[^0-9]","",gsub(" .*","",full$Cabin)))
+
+# Infer Age from title for NAs
+# First group honorifics together, and combine languages (Mlle=Miss for example):
+full$Title <- gsub("Mlle","Miss",full$Title)
+full$Title <- gsub("Mme","Mrs",full$Title)
+full$Title <- gsub("Ms","Mrs",full$Title)
+full$Title <- gsub("Dona","Hon",full$Title)
+full$Title <- gsub("Lady","Hon",full$Title)
+full$Title <- gsub("the Countess","Hon",full$Title)
+full$Title <- gsub("Col","Hon",full$Title)
+full$Title <- gsub("Dr","Hon",full$Title)
+full$Title <- gsub("Don","Hon",full$Title)
+full$Title <- gsub("Rev","Hon",full$Title)
+full$Title <- gsub("Major","Hon",full$Title)
+full$Title <- gsub("Capt","Hon",full$Title)
+full$Title <- gsub("Jonkheer","Hon",full$Title)
+full$Title <- gsub("Sir","Hon",full$Title)
+full$Title[full$Title=="Mr"&!full$SibSp==1] <- "Bach"
+
+# Get mean ages for each group
+grouped_data <- group_by(full[!is.na(full$Age),c("Title","Age")],Title)
+nums <- table(grouped_data$Title)
+ages <- summarise_each((grouped_data),funs(median))
+ages$count <- nums
+
+# Impute missing ages based on median for given title
+title_age <- ages$Age[as.factor(full$Title)]
+full$Age[is.na(full$Age)] <- title_age[is.na(full$Age)]
+
+# Very basic logistic model using Sex, Age, Class
+# full$std_Age <- as.numeric(scale(log(full$Age)))
+# #full$std_Age <- as.numeric(plogis((full$Age-18)/2))
+# full$Sex <- as.factor(full$Sex)
+# full$Pclass <- as.factor(full$Pclass)
+# full$AgeFactor <- as.factor(full$Age>=18)
+# 
+# logit1 <- glm(Survived ~ Pclass + Sex*std_Age, data = full[full$Set=="train",], family = "binomial")
+
+# Very basic neural network using Sex, Age, Class
+
+y <- full$Survived[full$Set=="train"]   # 0 = Died, +1 = Survived
+age <- as.numeric(full$Age[full$Set=="train"])/40-1   # Age scaled from ~ -1 to +1
+classes <- full$Pclass[full$Set=="train"]
+fclass <- -1+2*as.numeric(classes==1)   # 1 for First
+sclass <- -1+2*as.numeric(classes==2)   # 1 for Second
+sex <- as.integer(as.factor(full$Sex[full$Set=="train"]))*2-3   # -1 female, +1 male
+
+
+test_y <- full$Survived[full$Set=="test"]   # 0 = Died, +1 = Survived
+test_age <- as.numeric(full$Age[full$Set=="test"])/40-1   # Age scaled from ~ -1 to +1
+test_classes <- full$Pclass[full$Set=="test"]
+test_fclass <- -1+2*as.numeric(test_classes==1)   # 1 for First
+test_sclass <- -1+2*as.numeric(test_classes==2)   # 1 for Second
+test_sex <- as.integer(as.factor(full$Sex[full$Set=="test"]))*2-3   # -1 female, +1 male
+test_nnetdata <- data.frame(age=test_age,sex=test_sex,fclass=test_fclass,sclass=test_sclass,y=test_y)
+
+x_age <- rep(seq(1,80,1),6)/40-1
+x_fclass <- rep(c(rep(1,80),rep(-1,160)),2)
+x_sclass <- rep(c(rep(-1,80),rep(1,80),rep(-1,80)),2)
+x_sex <- c(rep(-1,240),rep(1,240))
+x <- data.frame(age=x_age,sex=x_sex,fclass=x_fclass,sclass=x_sclass)
+x$y <- numeric(nrow(x))
+```
+
+Model Fitting
+
+```{r}
+
+# Test which age/class/sex fit is best using cross-validation:
+
+nnetdata$y[nnetdata$y==0]<-"Died"
+nnetdata$y[nnetdata$y==1]<-"Survived"
+nnetdata$y<-factor(nnetdata$y)
+
+tc<-trainControl(method="repeatedcv",
+                 number=10,
+                 repeats=5,
+                 classProbs=TRUE,
+                 summaryFunction=twoClassSummary)
+
+tc_acc<-trainControl(method="repeatedcv",
+                 number=10,
+                 repeats=5,
+                 classProbs=FALSE)
+
+
+
+# Neural Network
+nnGrid<-expand.grid(size=seq(3,7,1),decay=10^seq(-5,-0.5,0.5))
+ptm <- proc.time()
+mod_nn<-train(y~.,
+                data=nnetdata,
+                method="nnet",
+                trControl=tc,
+                tuneGrid=nnGrid,
+                metric="ROC",
+                trace=FALSE)
+proc.time() - ptm
+mod_nn
+ggplot(mod_nn) + coord_trans(x = "log10")
+
+
+# Random Forest
+rfGrid<-data.frame(mtry=seq(1,10,1))
+ptm <- proc.time()
+mod_rf<-train(y~.,data=nnetdata,
+              method="rf",
+              trControl=tc,
+              tuneGrid=rfGrid,
+              metric="ROC",
+              trace=FALSE)
+proc.time() - ptm
+mod_rf
+ggplot(mod_rf)
+
+
+# Gradient Boosted Trees
+gbmGrid<-expand.grid(interaction.depth=seq(1,5,1),n.trees=seq(50,250,50),shrinkage=seq(0.05,0.2,0.05))
+ptm <- proc.time()
+mod_gbm<-train(y~.,data=nnetdata,
+              method="gbm",
+              trControl=tc,
+              tuneGrid=gbmGrid,
+              metric="ROC",
+              verbose=FALSE)
+proc.time() - ptm
+mod_gbm
+ggplot(mod_gbm)
+
+
+# Support Vector Machine
+svmGrid<-expand.grid(C=2^seq(-5,-2,1),sigma=2^seq(-3,3,1))
+ptm <- proc.time()
+mod_svm<-train(y~.,data=nnetdata,
+              method="svmRadial",
+              trControl=tc,
+              tuneGrid=svmGrid,
+              metric="ROC",
+              verbose=FALSE)
+proc.time() - ptm
+mod_svm
+ggplot(mod_svm) + coord_trans(x = "log10")
+
+
+# Regularized Discriminant Analysis (very slow)
+rdaGrid<-expand.grid(gamma=seq(0,0.08,0.02),lambda=seq(0.5,2.5,0.5))
+ptm <- proc.time()
+mod_rda<-train(y~.,data=nnetdata,
+              method="rda",
+              trControl=tc,
+              tuneGrid=rdaGrid,
+              metric="ROC",
+              verbose=FALSE)
+proc.time() - ptm
+mod_rda
+ggplot(mod_rda)
+
+
+# Simple Logistic Regression
+ptm <- proc.time()
+mod_log<-train(y~.,data=nnetdata,
+              method="glm",
+              family="binomial",
+              trControl=tc,
+              metric="ROC")
+proc.time() - ptm
+mod_log
+
+
+# Bagged Trees
+ptm <- proc.time()
+mod_bag<-train(y~.,data=nnetdata,
+              method="treebag",
+              trControl=tc,
+              tuneLength=2,
+              metric="ROC",
+              verbose=FALSE)
+proc.time() - ptm
+mod_bag
+ggplot(mod_bag)
+
+
+# Adaboost (slow)
+adaGrid<-expand.grid(iter=seq(100,700,300),maxdepth=seq(2,5,1),nu=2^seq(-5,-1,1))
+ptm <- proc.time()
+mod_ada<-train(y~.,data=nnetdata,
+              method="ada",
+              trControl=tc,
+              tuneGrid=adaGrid,
+              metric="ROC",
+              verbose=FALSE)
+proc.time() - ptm
+mod_ada
+ggplot(mod_ada)
+
+
+# K Nearest Neighbours
+ptm <- proc.time()
+mod_knn<-train(y~.,data=nnetdata,
+              method="kknn",
+              trControl=tc_acc,
+              tuneLength=2,
+              verbose=FALSE)
+proc.time() - ptm
+mod_knn
+ggplot(mod_knn)
+
+
+# Bagged flexible discriminant analysis
+bfdGrid<-expand.grid(nprune=seq(5,20,5),degree=seq(1,3,1))
+ptm <- proc.time()
+mod_bfd<-train(y~.,data=nnetdata,
+              method="bagFDA",
+              trControl=tc,
+              tuneGrid=bfdGrid,
+              metric="ROC")
+proc.time() - ptm
+mod_bfd
+ggplot(mod_bfd)
+
+
+resp_gbm<-predict(mod_gbm,nnetdata,type="prob")
+resp_rf<-predict(mod_rf,nnetdata,type="prob")
+resp_nn<-predict(mod_nn,nnetdata,type="prob")
+resp_svm<-predict(mod_svm,nnetdata,type="prob")
+resp_bfd<-predict(mod_bfd,nnetdata,type="prob")
+resp_bag<-predict(mod_bag,nnetdata,type="prob")
+resp_log<-predict(mod_log,nnetdata,type="prob")
+resp_rda<-predict(mod_rda,nnetdata,type="prob")
+
+raw_gbm<-predict(mod_gbm,nnetdata,type="raw")
+raw_rf<-predict(mod_rf,nnetdata,type="raw")
+raw_nn<-predict(mod_nn,nnetdata,type="raw")
+raw_svm<-predict(mod_svm,nnetdata,type="raw")
+raw_bfd<-predict(mod_bfd,nnetdata,type="raw")
+raw_bag<-predict(mod_bag,nnetdata,type="raw")
+raw_log<-predict(mod_log,nnetdata,type="raw")
+raw_rda<-predict(mod_rda,nnetdata,type="raw")
+raw_knn<-predict(mod_knn,nnetdata,type="raw")
+
+probs<-data.frame(gbm=resp_gbm[,1],
+                  rf=resp_rf[,1],
+                  nn=resp_nn[,1],
+                  svm=resp_svm[,1],
+                  bfd=resp_bfd[,1],
+                  bag=resp_bag[,1],
+                  log=resp_log[,1],
+                  rda=resp_rda[,1])
+
+accs<-data.frame(gbm=sum(raw_gbm==nnetdata$y)/length(nnetdata$y),
+                 rf=sum(raw_rf==nnetdata$y)/length(nnetdata$y),
+                 nn=sum(raw_nn==nnetdata$y)/length(nnetdata$y),
+                 svm=sum(raw_svm==nnetdata$y)/length(nnetdata$y),
+                 bfd=sum(raw_bfd==nnetdata$y)/length(nnetdata$y),
+                 bag=sum(raw_bag==nnetdata$y)/length(nnetdata$y),
+                 log=sum(raw_log==nnetdata$y)/length(nnetdata$y),
+                 rda=sum(raw_rda==nnetdata$y)/length(nnetdata$y),
+                 knn=sum(raw_knn==nnetdata$y)/length(nnetdata$y))
+
+corrplot(cor(probs))
+
+resamps <- resamples(list(GBM = mod_gbm,
+                          RF = mod_rf,
+                          NN = mod_nn,
+                          RDA = mod_rda,
+                          BAG = mod_bag,
+                          LOG = mod_log,
+                          SVM = mod_svm,
+                          BFD = mod_bfd,
+                          KNN = mod_knn
+                          ))
+
+tr_pred_gbm <- predict(mod_gbm,nnetdata,type="prob")
+
+
+```
+
+Tune based on accuracies, rather than ROCs:
+
+```{r}
+# Neural Network
+nnGrid<-expand.grid(size=seq(3,6,1),decay=10^seq(-4,-1,0.5))
+ptm <- proc.time()
+mod_nn<-train(y~.,
+                data=nnetdata,
+                method="nnet",
+                trControl=tc_acc,
+                tuneGrid=nnGrid,
+                trace=FALSE)
+proc.time() - ptm
+
+# Random Forest
+rfGrid<-data.frame(mtry=seq(1,5,1))
+mod_rf<-train(y~.,data=nnetdata,
+              method="rf",
+              trControl=tc_acc,
+              tuneGrid=rfGrid,
+              trace=FALSE)
+proc.time() - ptm
+
+
+# Gradient Boosted Trees
+gbmGrid<-expand.grid(interaction.depth=seq(2,4,1),n.trees=seq(25,150,25),shrinkage=seq(0.05,0.15,0.05))
+mod_gbm<-train(y~.,data=nnetdata,
+              method="gbm",
+              trControl=tc_acc,
+              tuneGrid=gbmGrid,
+              verbose=FALSE)
+proc.time() - ptm
+
+# Support Vector Machine
+svmGrid<-expand.grid(C=2^seq(-6,-4,1),sigma=2^seq(-2,4,1))
+mod_svm<-train(y~.,data=nnetdata,
+              method="svmRadial",
+              trControl=tc_acc,
+              tuneGrid=svmGrid,
+              verbose=FALSE)
+proc.time() - ptm
+
+
+# Regularized Discriminant Analysis (very slow)
+rdaGrid<-expand.grid(gamma=seq(0,0.08,0.02),lambda=seq(0,3,1))
+mod_rda<-train(y~.,data=nnetdata,
+              method="rda",
+              trControl=tc_acc,
+              tuneGrid=rdaGrid,
+              verbose=FALSE)
+proc.time() - ptm
+
+
+# Simple Logistic Regression
+mod_log<-train(y~.,data=nnetdata,
+              method="glm",
+              family="binomial",
+              trControl=tc_acc)
+proc.time() - ptm
+
+
+# Bagged Trees
+mod_bag<-train(y~.,data=nnetdata,
+              method="treebag",
+              trControl=tc_acc,
+              verbose=FALSE)
+proc.time() - ptm
+
+
+# K Nearest Neighbours
+knnGrid<-expand.grid(kmax=seq(6,18,3),distance=seq(1,5,1),kernel="optimal")
+mod_knn<-train(y~.,data=nnetdata,
+              method="kknn",
+              trControl=tc_acc,
+              tuneGrid=knnGrid,
+              verbose=FALSE)
+proc.time() - ptm
+
+
+# Bagged flexible discriminant analysis
+bfdGrid<-expand.grid(nprune=seq(3,12,3),degree=seq(1,4,1))
+mod_bfd<-train(y~.,data=nnetdata,
+              method="bagFDA",
+              trControl=tc_acc,
+              tuneGrid=bfdGrid)
+proc.time() - ptm
+
+
+
+raw_gbm<-predict(mod_gbm,nnetdata,type="raw")
+raw_rf<-predict(mod_rf,nnetdata,type="raw")
+raw_nn<-predict(mod_nn,nnetdata,type="raw")
+raw_svm<-predict(mod_svm,nnetdata,type="raw")
+raw_bfd<-predict(mod_bfd,nnetdata,type="raw")
+raw_rda<-predict(mod_rda,nnetdata,type="raw")
+raw_bag<-predict(mod_bag,nnetdata,type="raw")
+raw_log<-predict(mod_log,nnetdata,type="raw")
+raw_knn<-predict(mod_knn,nnetdata,type="raw")
+
+accs<-data.frame(gbm=sum(raw_gbm==nnetdata$y)/length(nnetdata$y),
+                 rf=sum(raw_rf==nnetdata$y)/length(nnetdata$y),
+                 nn=sum(raw_nn==nnetdata$y)/length(nnetdata$y),
+                 svm=sum(raw_svm==nnetdata$y)/length(nnetdata$y),
+                 bfd=sum(raw_bfd==nnetdata$y)/length(nnetdata$y),
+                 rda=sum(raw_rda==nnetdata$y)/length(nnetdata$y),
+                 bag=sum(raw_bag==nnetdata$y)/length(nnetdata$y),
+                 log=sum(raw_log==nnetdata$y)/length(nnetdata$y),
+                 knn=sum(raw_knn==nnetdata$y)/length(nnetdata$y))
+
+prob_gbm<-predict(mod_gbm,nnetdata,type="prob")
+prob_rf<-predict(mod_rf,nnetdata,type="prob")
+prob_nn<-predict(mod_nn,nnetdata,type="prob")
+prob_svm<-predict(mod_svm,nnetdata,type="prob")
+prob_bfd<-predict(mod_bfd,nnetdata,type="prob")
+prob_rda<-predict(mod_rda,nnetdata,type="prob")
+prob_bag<-predict(mod_bag,nnetdata,type="prob")
+prob_log<-predict(mod_log,nnetdata,type="prob")
+
+# Stacked model
+stackdata <- data.frame(gbm=prob_gbm[,1],
+                  rf=prob_rf[,1],
+                  nn=prob_nn[,1],
+                  svm=prob_svm[,1],
+                  bfd=prob_bfd[,1],
+                  bag=prob_bag[,1],
+                  log=prob_log[,1],
+                  rda=prob_rda[,1],
+                  knn=raw_knn,
+                  y=nnetdata$y)
+
+
+nnGrid2<-expand.grid(size=seq(3,6,1),decay=10^seq(-3,0.5,0.5))
+ptm<-proc.time()
+mod_stack<-train(y~.,
+                 data=stackdata,
+                 method="nnet",
+                 tuneGrid=nnGrid2,
+                 trControl=tc_acc,
+                 trace=FALSE)
+proc.time() - ptm
+mod_stack
+ggplot(mod_stack) + coord_trans(x = "log10")
+
+
+```
+
+```{r}
+# Predict from the stacked model:
+stack_pred <- test[,1]
+
+prob_gbm_test<-predict(mod_gbm,test_nnetdata,type="prob")
+prob_rf_test<-predict(mod_rf,test_nnetdata,type="prob")
+prob_nn_test<-predict(mod_nn,test_nnetdata,type="prob")
+prob_svm_test<-predict(mod_svm,test_nnetdata,type="prob")
+prob_bfd_test<-predict(mod_bfd,test_nnetdata,type="prob")
+prob_rda_test<-predict(mod_rda,test_nnetdata,type="prob")
+prob_bag_test<-predict(mod_bag,test_nnetdata,type="prob")
+prob_log_test<-predict(mod_log,test_nnetdata,type="prob")
+raw_knn_test<-predict(mod_knn,test_nnetdata,type="raw")
+
+stackdata_test <- data.frame(gbm=prob_gbm_test[,1],
+                  rf=prob_rf_test[,1],
+                  nn=prob_nn_test[,1],
+                  svm=prob_svm_test[,1],
+                  bfd=prob_bfd_test[,1],
+                  bag=prob_bag_test[,1],
+                  log=prob_log_test[,1],
+                  rda=prob_rda_test[,1],
+                  knn=raw_knn_test,
+                  y=test_nnetdata$y)
+
+stack_pred$Survived <- as.numeric(predict(mod_stack, stackdata_test))-1
+write.csv(stack_pred, file = "stack_pred.csv",row.names=FALSE)
+
+gbm_pred<-stack_pred
+gbm_pred$Survived <- as.numeric(predict(mod_gbm, test_nnetdata))-1
+write.csv(gbm_pred, file = "gbm_pred.csv",row.names=FALSE)
+
+svm_pred<-stack_pred
+svm_pred$Survived <- as.numeric(predict(mod_svm, test_nnetdata))-1
+write.csv(svm_pred, file = "svm_pred.csv",row.names=FALSE)
+
+nn_pred<-stack_pred
+nn_pred$Survived <- as.numeric(predict(mod_nn, test_nnetdata))-1
+write.csv(nn_pred, file = "nn_pred.csv",row.names=FALSE)
+
+rda_pred<-stack_pred
+rda_pred$Survived <- as.numeric(predict(mod_rda, test_nnetdata))-1
+write.csv(rda_pred, file = "rda_pred.csv",row.names=FALSE)
+
+log_pred<-stack_pred
+log_pred$Survived <- as.numeric(predict(mod_log, test_nnetdata))-1
+write.csv(log_pred, file = "log_pred.csv",row.names=FALSE)
+
+rf_pred<-stack_pred
+rf_pred$Survived <- as.numeric(predict(mod_rf, test_nnetdata))-1
+write.csv(rf_pred, file = "rf_pred.csv",row.names=FALSE)
+
+bag_pred<-stack_pred
+bag_pred$Survived <- as.numeric(predict(mod_bag, test_nnetdata))-1
+write.csv(bag_pred, file = "bag_pred.csv",row.names=FALSE)
+
+bfd_pred<-stack_pred
+bfd_pred$Survived <- as.numeric(predict(mod_bfd, test_nnetdata))-1
+write.csv(bfd_pred, file = "bfd_pred.csv",row.names=FALSE)
+
+knn_pred<-stack_pred
+knn_pred$Survived <- as.numeric(predict(mod_knn, test_nnetdata))-1
+write.csv(knn_pred, file = "knn_pred.csv",row.names=FALSE)
+
+```
+
+Check how similar the predictions are from different models:
+
+```{r}
+raw_gbm_test<-as.numeric(predict(mod_gbm,test_nnetdata,type="raw"))-1
+raw_rf_test<-as.numeric(predict(mod_rf,test_nnetdata,type="raw"))-1
+raw_nn_test<-as.numeric(predict(mod_nn,test_nnetdata,type="raw"))-1
+raw_svm_test<-as.numeric(predict(mod_svm,test_nnetdata,type="raw"))-1
+raw_bfd_test<-as.numeric(predict(mod_bfd,test_nnetdata,type="raw"))-1
+raw_rda_test<-as.numeric(predict(mod_rda,test_nnetdata,type="raw"))-1
+raw_bag_test<-as.numeric(predict(mod_bag,test_nnetdata,type="raw"))-1
+raw_log_test<-as.numeric(predict(mod_log,test_nnetdata,type="raw"))-1
+raw_knn_test<-as.numeric(predict(mod_knn,test_nnetdata,type="raw"))-1
+raw_stack_test<-as.numeric(stack_pred$Survived)
+
+testpreds<-data.frame(gbm=raw_gbm_test,
+                      rf=raw_rf_test,
+                      bag=raw_bag_test,
+                      bfd=raw_bfd_test,
+                      rda=raw_rda_test,
+                      svm=raw_svm_test,
+                      nn=raw_nn_test,
+                      log=raw_log_test,
+                      knn=raw_knn_test,
+                      stack=raw_stack_test)
+
+plotdata<-data.frame(cmdscale(dist(t(as.matrix(testpreds)))))
+minp<-min(plotdata)
+maxp<-max(plotdata)
+plotdata<-(plotdata-minp)/(maxp-minp)
+
+ggplot(plotdata,aes(x=X2,y=X1,label=rownames(plotdata)))+
+        geom_point() +
+        geom_text() +
+        coord_equal()
+```
+
+preds <- data.frame(logit1=numeric(n))
+preds$logit2 <- numeric(n)
+preds$logit3 <- numeric(n)
+preds$logit4 <- numeric(n)
+preds$simplenn1 <- numeric(n)
+preds$simplenn2 <- numeric(n)
+preds$simplenn3 <- numeric(n)
+preds$simplenn4 <- numeric(n)
+preds$simplenn5 <- numeric(n)
+preds$simplenn6 <- numeric(n)
+preds$longnn1 <- numeric(n)
+preds$longnn2 <- numeric(n)
+preds$longnn3 <- numeric(n)
+preds$longnn4 <- numeric(n)
+preds$longnn5 <- numeric(n)
+preds$longnn6 <- numeric(n)
+
+s <- seq(1,n,1)
+
+for (j in s){
+    tnndata <- nnetdata[s[!(s %in% j)],]
+    input <- tnndata[,1:4]
+    output <- tnndata[,5]
+    logit1 <- glm(y ~ age+sex+fclass+sclass, data=tnndata, family = "binomial")
+    logit2 <- glm(y ~ age+sex+fclass:sclass, data=tnndata, family = "binomial")
+    logit3 <- glm(y ~ age*sex+fclass+sclass, data=tnndata, family = "binomial")
+    logit4 <- glm(y ~ age*sex*fclass*sclass, data=tnndata, family = "binomial")
+    simplenn1<- nnet(input,output,size=1,decay=1e-3,maxit=200,trace=FALSE)
+    simplenn2<- nnet(input,output,size=2,decay=1e-3,maxit=200,trace=FALSE)
+    simplenn3<- nnet(input,output,size=3,decay=1e-3,maxit=200,trace=FALSE)
+    simplenn4<- nnet(input,output,size=4,decay=1e-3,maxit=200,trace=FALSE)
+    simplenn5<- nnet(input,output,size=5,decay=1e-3,maxit=200,trace=FALSE)
+    simplenn6<- nnet(input,output,size=6,decay=1e-3,maxit=200,trace=FALSE)
+    longnn1<- nnet(input,output,size=7,decay=1e-2,maxit=200,trace=FALSE)
+    longnn2<- nnet(input,output,size=7,decay=3e-3,maxit=200,trace=FALSE)
+    longnn3<- nnet(input,output,size=7,decay=1e-3,maxit=200,trace=FALSE)
+    longnn4<- nnet(input,output,size=7,decay=3e-4,maxit=200,trace=FALSE)
+    longnn5<- nnet(input,output,size=7,decay=1e-4,maxit=200,trace=FALSE)
+    longnn6<- nnet(input,output,size=7,decay=3e-5,maxit=200,trace=FALSE)
+    
+    preds$logit1[j] <- predict(logit1,nnetdata[j,1:4],type="response")
+    preds$logit2[j] <- predict(logit2,nnetdata[j,1:4],type="response")
+    preds$logit3[j] <- predict(logit3,nnetdata[j,1:4],type="response")
+    preds$logit4[j] <- predict(logit4,nnetdata[j,1:4],type="response")
+    preds$simplenn1[j] <- predict(simplenn1,nnetdata[j,1:4])
+    preds$simplenn2[j] <- predict(simplenn2,nnetdata[j,1:4])
+    preds$simplenn3[j] <- predict(simplenn3,nnetdata[j,1:4])
+    preds$simplenn4[j] <- predict(simplenn4,nnetdata[j,1:4])
+    preds$simplenn5[j] <- predict(simplenn5,nnetdata[j,1:4])
+    preds$simplenn6[j] <- predict(simplenn6,nnetdata[j,1:4])
+    preds$longnn1[j] <- predict(longnn1,nnetdata[j,1:4])
+    preds$longnn2[j] <- predict(longnn2,nnetdata[j,1:4])
+    preds$longnn3[j] <- predict(longnn3,nnetdata[j,1:4])
+    preds$longnn4[j] <- predict(longnn4,nnetdata[j,1:4])
+    preds$longnn5[j] <- predict(longnn5,nnetdata[j,1:4])
+    preds$longnn6[j] <- predict(longnn6,nnetdata[j,1:4])
+}
+
+# Scores:
+
+Scores <- data.frame(Accuracy=numeric(ncol(preds)),Prob=numeric(ncol(preds)),AUC=numeric(ncol(preds)))
+
+
+for (k in 1:ncol(preds)) {
+    Scores$Accuracy[k] <- (sum(preds[,k]<0.5&y==0)+sum(preds[,k]>0.5&y==1))/n
+    Scores$Prob[k] <- (sum(preds[,k]*y+(1-preds[,k])*(1-y)))/n
+    Scores$AUC[k] <- auc(y,preds[,k])
+}
+
+
+```
+
+```{r}
+# Make a simple prediction to get started
+nn6_3e5_pred <- test[,1]
+nn6_3e5_pred$Survived <- round(predict(longnn6, test_nnetdata))
+write.csv(nn6_3e5_pred, file = "nn6_3e5_pred.csv",row.names=FALSE)
+```
+
+
+#NEURALNET
+simplenet <- neuralnet(y~age+sex+class,data=nnetdata,hidden=9,likelihood=TRUE)
+x <- data.frame(age=x_age,sex=x_sex,class=x_class)
+pred_y <- compute(simplenet,x)$net.result
+x$y <- pred_y
+
+ggplot(data=x,
+       aes(x=age, y=y)) +
+       geom_point() +
+       facet_grid(class ~ sex)
+
+# NNET
+
+simplenet2 <- nnet(nnetdata[,1:3],nnetdata[,4],size=6,decay=1e-2,maxit=200)
+x <- data.frame(age=x_age,sex=x_sex,class=x_class)
+pred_y <- predict(simplenet2,x)
+x$y <- pred_y
+
+ggplot(data=x,
+       aes(x=age, y=y)) +
+       geom_point() +
+       facet_grid(class ~ sex)
+
+# LOGIT
+
+logit1 <- glm(y ~ age*sex*class, data=nnetdata, family = "binomial")
+x <- data.frame(age=x_age,sex=x_sex,class=x_class)
+pred_y <- predict(logit1,x)
+x$y <- pred_y
+
+ggplot(data=x,
+       aes(x=age, y=y)) +
+       geom_point() +
+       facet_grid(class ~ sex)
+
+
+full$Surv_corrected <- full$Survived-predict(logit1, full[c("Pclass","Sex","std_Age","AgeXSex")], type="response")
+
+# Make a simple prediction to get started
+logit1pred <- test[,1]
+logit1pred$Survived <- round(predict(logit1, full[full$Set=="test",c("Pclass","Sex","std_Age","AgeXSex")], type="response"))
+write.csv(logit1pred, file = "logit1.csv",row.names=FALSE)
+```
+
+Taking a look at Decks and Cabin #s to see if there's anything in the passenger location that we can extract. We'll start by converting the cabin numbers to approximate locations, from -1 (stern) to 1 (bow). We'll use this [Titanic deckplan](http://www.encyclopedia-titanica.org/titanic-deckplans/).
+
+```{r}
+# Let's try to convert the cabin numbers to approximate locations:
+full$x_loc <- numeric(nrow(full))
+full$x_loc[full$Deck=="A"&!is.na(full$Cabinnum)
+
+
+
+
+bydeck <- group_by(full[full$Set=="train"&!is.na(full$Cabinnum),c("Surv_corrected","Deck","Cabinnum")],Deck)
+
+ggplot(data=bydeck,
+       aes(x=Cabinnum, y=Surv_corrected)) +
+       geom_point() +
+       facet_grid(Deck ~ .) +
+       geom_smooth(method = "lm", se=FALSE, color="blue", aes(group=1))
+```
+
+Not a lot there. Possibly there's a trend for better outcomes if you were near the front or back of the ship on a lower deck?
+
+Let's also do our best to group families or people travelling on the same ticket.
+
+```{r}
+# Incorporate the corrected survival rates of anyone travelling on the same ticket
+full$Surv_corrected[full$Set=="test"] <- 0
+Tkt_Table <- group_by(full[,c("Surv_corrected","Ticket")],Ticket)
+Tkt_Survival <- summarise_each(Tkt_Table,funs(sum))
+full$Tkt_Survival <- Tkt_Survival$Surv_corrected[as.character(Tkt_Survival$Ticket)==as.character(full$Ticket)] 
+```
+decks <- tally(bydeck)
+decks$Survived <- summarise_each(bydeck,funs(sum))$Survived
+decks$chance <- decks$Survived/decks$n
+
+# Summarise data ready for plotting:
+
+
+grouped_data <- group_by(train[!is.na(train$Age),c("Title","Age")],Title)
+nums <- table(grouped_data$Title)
+ages <- 
+
+numticket <- table(full$Ticket)
+party <- full$SibSp+full$Parch+1
+party2 <- numticket[full$Ticket]
+
+
+
+
+AGtable <- train[c("Age","Sex","Survived")] 
+AGtable <- AGtable[complete.cases(AGtable),] # Remove unknown ages
+AGtable$agebin <- 3*ceiling(AGtable$Age/3) # Bin ages into 3-year segments
+
+pn <- tally(group_by(AGtable[c("Sex","agebin","Survived")],Sex,agebin))
+ps <- summarise_each(group_by(AGtable[c("Sex","agebin","Survived")],Sex,agebin),funs(mean))
+
+s_table <- merge(pn,ps,by=intersect(names(pn),names(ps)))
+
+Sex <- c(rep("female",27),rep("male",27))
+agebin <- c(seq(3,81,3),seq(3,81,3))
+agedf <- data.frame(Sex=Sex,agebin=agebin)
+agedf$num <- 0
+agedf$num <- pn$n[pn$Sex==agedf$Sex&pn$agebin==agedf$agebin]
+
+s_table$chance <- (s_table$Survived*s_table$n^0.5+700/2200)/(s_table$n^0.5+1)
+
+ggplot(data=s_table,
+       aes(x=agebin, y=chance, colour=Sex)) +
+       geom_line()
+
+```
+
+```{r}
+
+party3 <- party[full$Age[!is.na(full$Age)]<20]
+party4 <- party2[full$Age[!is.na(full$Age)]<20]
+
+cor(party3[!is.na(full$Age)],party4[!is.na(full$Age)])
+
+
+
+AND <- c(rep(0,7),1)
+OR <- c(0,rep(1,7))
+binary.data <- data.frame(expand.grid(c(0,1), c(0,1), c(0,1)), AND, OR)
+print(net <- neuralnet(AND+OR~Var1+Var2+Var3,  binary.data, hidden=0, 
+             rep=10, err.fct="ce", linear.output=FALSE))
+
+
+
+deckdata<-full[full$Set=="train",c("Deck","Survived","Set","Pclass")]
+deckdata$y<-preds$longnn6
+deckdata<-deckdata[deckdata$Pclass==1,c("Deck","Survived","y")]
+
+deckdata<-deckdata[!deckdata$Deck=="",]
+deckdatagpd<-group_by(deckdata,Deck)
+summarise_each(deckdatagpd,funs(mean))
+
+table(deckdata$Deck)
+
+
+
+
+
+
+
+```
