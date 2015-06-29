@@ -1,5 +1,5 @@
 ---
-    title: "Predicting Titanic Survival from Passenger Records: An example of Mchine learning in R."
+    title: "Predicting Titanic Survival from Passenger Records: An example of Machine Learning using caret in R."
 author: "Iain Harlow"
 date: 
 output:
@@ -124,7 +124,12 @@ We're looking, then, at the following predictors:
 - Age
 - Sex
 - Class (2 dummy variables)
-- 
+- Family relationship
+- Location
+
+The latter two variables will be a little more complex and take some care to set up. Meanwhile, let's use just the first 3 predictors of age/sex/class and get a sense of how well different machine learning methods do with this relatively simple set of data.
+
+First, load up the libraries we'll be using:
 
 ```{r}
 setwd("C:/Users/Iain/Desktop/R/Titanic")
@@ -143,9 +148,10 @@ suppressWarnings(suppressMessages(library(adabag))) # For boosting
 suppressWarnings(suppressMessages(library(gbm))) # For boosting 
 suppressWarnings(suppressMessages(library(randomForest))) # For boosting 
 suppressWarnings(suppressMessages(library(caret))) # For training/selecting models 
+```
+Next, load up the data itself and orgainse it into a dplyr data table:
 
-
-
+```{r}
 rm(list = setdiff(ls(),c("trainraw","testraw")))
 
 if (!exists("testraw")){
@@ -168,6 +174,9 @@ test$Set <- "test"
 test$Survived <- rep(2,nrow(test))
 full <- rbind(test,train)
 
+```
+Do a bit of simple data cleaning, such as imputing missing ages:
+```{r}
 # Get title, ticket #, surname, deck, cabin #:
 full$Title <- gsub(".*, ","",full$Name)
 full$Title <- gsub("\\..*","",full$Title)
@@ -700,129 +709,7 @@ ggplot(plotdata,aes(x=X2,y=X1,label=rownames(plotdata)))+
         coord_equal()
 ```
 
-preds <- data.frame(logit1=numeric(n))
-preds$logit2 <- numeric(n)
-preds$logit3 <- numeric(n)
-preds$logit4 <- numeric(n)
-preds$simplenn1 <- numeric(n)
-preds$simplenn2 <- numeric(n)
-preds$simplenn3 <- numeric(n)
-preds$simplenn4 <- numeric(n)
-preds$simplenn5 <- numeric(n)
-preds$simplenn6 <- numeric(n)
-preds$longnn1 <- numeric(n)
-preds$longnn2 <- numeric(n)
-preds$longnn3 <- numeric(n)
-preds$longnn4 <- numeric(n)
-preds$longnn5 <- numeric(n)
-preds$longnn6 <- numeric(n)
 
-s <- seq(1,n,1)
-
-for (j in s){
-    tnndata <- nnetdata[s[!(s %in% j)],]
-    input <- tnndata[,1:4]
-    output <- tnndata[,5]
-    logit1 <- glm(y ~ age+sex+fclass+sclass, data=tnndata, family = "binomial")
-    logit2 <- glm(y ~ age+sex+fclass:sclass, data=tnndata, family = "binomial")
-    logit3 <- glm(y ~ age*sex+fclass+sclass, data=tnndata, family = "binomial")
-    logit4 <- glm(y ~ age*sex*fclass*sclass, data=tnndata, family = "binomial")
-    simplenn1<- nnet(input,output,size=1,decay=1e-3,maxit=200,trace=FALSE)
-    simplenn2<- nnet(input,output,size=2,decay=1e-3,maxit=200,trace=FALSE)
-    simplenn3<- nnet(input,output,size=3,decay=1e-3,maxit=200,trace=FALSE)
-    simplenn4<- nnet(input,output,size=4,decay=1e-3,maxit=200,trace=FALSE)
-    simplenn5<- nnet(input,output,size=5,decay=1e-3,maxit=200,trace=FALSE)
-    simplenn6<- nnet(input,output,size=6,decay=1e-3,maxit=200,trace=FALSE)
-    longnn1<- nnet(input,output,size=7,decay=1e-2,maxit=200,trace=FALSE)
-    longnn2<- nnet(input,output,size=7,decay=3e-3,maxit=200,trace=FALSE)
-    longnn3<- nnet(input,output,size=7,decay=1e-3,maxit=200,trace=FALSE)
-    longnn4<- nnet(input,output,size=7,decay=3e-4,maxit=200,trace=FALSE)
-    longnn5<- nnet(input,output,size=7,decay=1e-4,maxit=200,trace=FALSE)
-    longnn6<- nnet(input,output,size=7,decay=3e-5,maxit=200,trace=FALSE)
-    
-    preds$logit1[j] <- predict(logit1,nnetdata[j,1:4],type="response")
-    preds$logit2[j] <- predict(logit2,nnetdata[j,1:4],type="response")
-    preds$logit3[j] <- predict(logit3,nnetdata[j,1:4],type="response")
-    preds$logit4[j] <- predict(logit4,nnetdata[j,1:4],type="response")
-    preds$simplenn1[j] <- predict(simplenn1,nnetdata[j,1:4])
-    preds$simplenn2[j] <- predict(simplenn2,nnetdata[j,1:4])
-    preds$simplenn3[j] <- predict(simplenn3,nnetdata[j,1:4])
-    preds$simplenn4[j] <- predict(simplenn4,nnetdata[j,1:4])
-    preds$simplenn5[j] <- predict(simplenn5,nnetdata[j,1:4])
-    preds$simplenn6[j] <- predict(simplenn6,nnetdata[j,1:4])
-    preds$longnn1[j] <- predict(longnn1,nnetdata[j,1:4])
-    preds$longnn2[j] <- predict(longnn2,nnetdata[j,1:4])
-    preds$longnn3[j] <- predict(longnn3,nnetdata[j,1:4])
-    preds$longnn4[j] <- predict(longnn4,nnetdata[j,1:4])
-    preds$longnn5[j] <- predict(longnn5,nnetdata[j,1:4])
-    preds$longnn6[j] <- predict(longnn6,nnetdata[j,1:4])
-}
-
-# Scores:
-
-Scores <- data.frame(Accuracy=numeric(ncol(preds)),Prob=numeric(ncol(preds)),AUC=numeric(ncol(preds)))
-
-
-for (k in 1:ncol(preds)) {
-    Scores$Accuracy[k] <- (sum(preds[,k]<0.5&y==0)+sum(preds[,k]>0.5&y==1))/n
-    Scores$Prob[k] <- (sum(preds[,k]*y+(1-preds[,k])*(1-y)))/n
-    Scores$AUC[k] <- auc(y,preds[,k])
-}
-
-
-```
-
-```{r}
-# Make a simple prediction to get started
-nn6_3e5_pred <- test[,1]
-nn6_3e5_pred$Survived <- round(predict(longnn6, test_nnetdata))
-write.csv(nn6_3e5_pred, file = "nn6_3e5_pred.csv",row.names=FALSE)
-```
-
-
-#NEURALNET
-simplenet <- neuralnet(y~age+sex+class,data=nnetdata,hidden=9,likelihood=TRUE)
-x <- data.frame(age=x_age,sex=x_sex,class=x_class)
-pred_y <- compute(simplenet,x)$net.result
-x$y <- pred_y
-
-ggplot(data=x,
-       aes(x=age, y=y)) +
-       geom_point() +
-       facet_grid(class ~ sex)
-
-# NNET
-
-simplenet2 <- nnet(nnetdata[,1:3],nnetdata[,4],size=6,decay=1e-2,maxit=200)
-x <- data.frame(age=x_age,sex=x_sex,class=x_class)
-pred_y <- predict(simplenet2,x)
-x$y <- pred_y
-
-ggplot(data=x,
-       aes(x=age, y=y)) +
-       geom_point() +
-       facet_grid(class ~ sex)
-
-# LOGIT
-
-logit1 <- glm(y ~ age*sex*class, data=nnetdata, family = "binomial")
-x <- data.frame(age=x_age,sex=x_sex,class=x_class)
-pred_y <- predict(logit1,x)
-x$y <- pred_y
-
-ggplot(data=x,
-       aes(x=age, y=y)) +
-       geom_point() +
-       facet_grid(class ~ sex)
-
-
-full$Surv_corrected <- full$Survived-predict(logit1, full[c("Pclass","Sex","std_Age","AgeXSex")], type="response")
-
-# Make a simple prediction to get started
-logit1pred <- test[,1]
-logit1pred$Survived <- round(predict(logit1, full[full$Set=="test",c("Pclass","Sex","std_Age","AgeXSex")], type="response"))
-write.csv(logit1pred, file = "logit1.csv",row.names=FALSE)
-```
 
 Taking a look at Decks and Cabin #s to see if there's anything in the passenger location that we can extract. We'll start by converting the cabin numbers to approximate locations, from -1 (stern) to 1 (bow). We'll use this [Titanic deckplan](http://www.encyclopedia-titanica.org/titanic-deckplans/).
 
@@ -854,78 +741,4 @@ Tkt_Table <- group_by(full[,c("Surv_corrected","Ticket")],Ticket)
 Tkt_Survival <- summarise_each(Tkt_Table,funs(sum))
 full$Tkt_Survival <- Tkt_Survival$Surv_corrected[as.character(Tkt_Survival$Ticket)==as.character(full$Ticket)] 
 ```
-decks <- tally(bydeck)
-decks$Survived <- summarise_each(bydeck,funs(sum))$Survived
-decks$chance <- decks$Survived/decks$n
 
-# Summarise data ready for plotting:
-
-
-grouped_data <- group_by(train[!is.na(train$Age),c("Title","Age")],Title)
-nums <- table(grouped_data$Title)
-ages <- 
-
-numticket <- table(full$Ticket)
-party <- full$SibSp+full$Parch+1
-party2 <- numticket[full$Ticket]
-
-
-
-
-AGtable <- train[c("Age","Sex","Survived")] 
-AGtable <- AGtable[complete.cases(AGtable),] # Remove unknown ages
-AGtable$agebin <- 3*ceiling(AGtable$Age/3) # Bin ages into 3-year segments
-
-pn <- tally(group_by(AGtable[c("Sex","agebin","Survived")],Sex,agebin))
-ps <- summarise_each(group_by(AGtable[c("Sex","agebin","Survived")],Sex,agebin),funs(mean))
-
-s_table <- merge(pn,ps,by=intersect(names(pn),names(ps)))
-
-Sex <- c(rep("female",27),rep("male",27))
-agebin <- c(seq(3,81,3),seq(3,81,3))
-agedf <- data.frame(Sex=Sex,agebin=agebin)
-agedf$num <- 0
-agedf$num <- pn$n[pn$Sex==agedf$Sex&pn$agebin==agedf$agebin]
-
-s_table$chance <- (s_table$Survived*s_table$n^0.5+700/2200)/(s_table$n^0.5+1)
-
-ggplot(data=s_table,
-       aes(x=agebin, y=chance, colour=Sex)) +
-       geom_line()
-
-```
-
-```{r}
-
-party3 <- party[full$Age[!is.na(full$Age)]<20]
-party4 <- party2[full$Age[!is.na(full$Age)]<20]
-
-cor(party3[!is.na(full$Age)],party4[!is.na(full$Age)])
-
-
-
-AND <- c(rep(0,7),1)
-OR <- c(0,rep(1,7))
-binary.data <- data.frame(expand.grid(c(0,1), c(0,1), c(0,1)), AND, OR)
-print(net <- neuralnet(AND+OR~Var1+Var2+Var3,  binary.data, hidden=0, 
-             rep=10, err.fct="ce", linear.output=FALSE))
-
-
-
-deckdata<-full[full$Set=="train",c("Deck","Survived","Set","Pclass")]
-deckdata$y<-preds$longnn6
-deckdata<-deckdata[deckdata$Pclass==1,c("Deck","Survived","y")]
-
-deckdata<-deckdata[!deckdata$Deck=="",]
-deckdatagpd<-group_by(deckdata,Deck)
-summarise_each(deckdatagpd,funs(mean))
-
-table(deckdata$Deck)
-
-
-
-
-
-
-
-```
