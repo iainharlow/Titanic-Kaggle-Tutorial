@@ -9,9 +9,17 @@ pdf_document: default
 ---
     
     ___
-### Synopsis
+## Synopsis
 
-Machine-learning driven predictions of Titanic Disaster survival likelihood, based on passenger records. This kaggle 'contest' is non-competitive and so I'll go step-by-step through my approach in the hope that you find it useful or interesting!
+This is a tutorial in R for machine-learning driven predictions of Titanic Disaster survival likelihood, based on passenger records. This kaggle 'contest' is non-competitive and so I'll go step-by-step through my approach in the hope that you find it useful or interesting!
+
+The aim here is to:
+
+1. Demonstrate the use of R, and in particular the caret package, for machine learning with a variety of different models and approaches.
+
+2. Get to understand the strengths and weaknesses of each machine learning method, both by comparing their performances (and the correlations between their predictions) but also by systematically examining how different settings for each method affect how they learn.
+
+3. Emphasise the importance of feature selection and engineering - we have many machine learning algorithms available, and it's possible to stack and combine many together to fine-tune performance. But ultimately, they can only extract the information we feed them - so curating the input is a huge part of successful machine learning.
 
 ### Approach
 
@@ -21,15 +29,17 @@ Glancing through the available data and the event [background](http://en.wikiped
 - But the interaction of these features may also be very important: For example, the survival of male and female passengers may show different relationships with age or class.
 - We have a relatively small dataset, and a fairly high number of predictors, so overfitting is something we shoudl definitely be cautious about.
 
-Let's use this dataset to play with some different classification algorithms in R. We can compare their performance to get a sense of how they compare, and perhaps build a final model incorporating more than one (i.e. "stack" the models).
+Let's use this dataset to play with some different classification algorithms in R. We can compare their performance to get a sense of how each performs, and perhaps build a final model incorporating more than one (i.e. "stack" the models).
 
 We'll also perform some simple munging or feature engineering to extract as clean and relevant a set of predictors as possible. This dataset is a nice one to demonstrate this, since we have a reasonable intuition about what each of the features actually reflects and how it might affect the model (often this can be more ambiguous).
 
-### Benchmarking Performance
+## Part 1: Benchmarking Performance
 
 First off, let's take a look at the leaderboard to get an idea of benchmark performance. When you download the zip file from the [leaderboard page](https://www.kaggle.com/c/titanic-gettingStarted/leaderboard) you get a list of every entry made *that improved on the submitters previous score*. So the scores here are going to be a biased reflection of how people's models are performing out-of-sample. We'll also mark the 'benchmark' models on here, too:
 
-```{r}
+```{r, cache=TRUE}
+setwd("C:/Users/Iain/Google Drive/Github/Blog/Titanic-Kaggle-Tutorial")
+suppressWarnings(suppressMessages(library(ggplot2))) # For plotting
 improvements <- read.csv("titanic-gettingStarted_public_leaderboard.csv",stringsAsFactors=FALSE)
 
 d<-data.frame(model=c("All Perish","Gender","Random Forest","Gen/Price/Class"),
@@ -81,7 +91,7 @@ So overall, it looks like a model scoring 78-80% is probably doing pretty well. 
 
 Finally, since a simple gender split gives 77%, scores below ~75% for more complex models are likely a warning sign that we're overfitting. The random forest benchmark is also quite useful, as random forests tend to be a fairly powerful method for extracting relationships between the features and outcome (if a little hard to interpret and prone to overfitting). This random forest gives us an idea of how much we can extract with a powerful model simply by using the features as they are. In the next section we'll take a look at the features we have available, and assess them one-by-one.
 
-### Features
+## Part 2: Features
 
 A good approach I think, especially when we have a reasonably limited and interpretable feature set, is to go through them one by one and consider how useful or predictive we'd expect them to be. We'll also have a think about how to manipulate or reformat them to perhaps improve their predictive power, or even discard some at this stage.
 
@@ -127,7 +137,9 @@ We're looking, then, at the following predictors:
 - Family relationship
 - Location
 
-The latter two variables will be a little more complex and take some care to set up. Meanwhile, let's use just the first 3 predictors of age/sex/class and get a sense of how well different machine learning methods do with this relatively simple set of data.
+The latter two variables will be a little more complex and take some care to set up. For this stage of the tutorial, let's use just the first 3 predictors of age/sex/class and get a sense of how well different machine learning methods do with this relatively simple set of data. The idea will be to get a practical understanding not just of how the different approaches compare, but how the choice of meta-parameters (e.g. the number of hidden nodes in the neural network) affect their out-of-set classification accuracy.
+
+## Part 3: Preparing the data
 
 First, load up the libraries we'll be using:
 
@@ -142,14 +154,14 @@ suppressWarnings(suppressMessages(library(plyr))) # Working with tidy data
 suppressWarnings(suppressMessages(library(dplyr))) # Working with tidy data
 suppressWarnings(suppressMessages(library(reshape2))) # Reshaping tables
 suppressWarnings(suppressMessages(library(scales))) # For plotting 
-suppressWarnings(suppressMessages(library(ggplot2))) # For plotting
 suppressWarnings(suppressMessages(library(stringr))) # For manipulating strings
 suppressWarnings(suppressMessages(library(adabag))) # For boosting 
 suppressWarnings(suppressMessages(library(gbm))) # For boosting 
 suppressWarnings(suppressMessages(library(randomForest))) # For boosting 
 suppressWarnings(suppressMessages(library(caret))) # For training/selecting models 
 ```
-Next, load up the data itself and orgainse it into a dplyr data table:
+
+Next, load up the data itself and organise it into a dplyr data table:
 
 ```{r}
 rm(list = setdiff(ls(),c("trainraw","testraw")))
@@ -175,7 +187,9 @@ test$Survived <- rep(2,nrow(test))
 full <- rbind(test,train)
 
 ```
+
 Do a bit of simple data cleaning, such as imputing missing ages:
+
 ```{r}
 # Get title, ticket #, surname, deck, cabin #:
 full$Title <- gsub(".*, ","",full$Name)
@@ -212,7 +226,11 @@ ages$count <- nums
 # Impute missing ages based on median for given title
 title_age <- ages$Age[as.factor(full$Title)]
 full$Age[is.na(full$Age)] <- title_age[is.na(full$Age)]
+```
 
+Finally, we'll build smaller versions of the dataset, using only the simpler features we've decided to include at this stage. We'll also normalise the data.
+
+```{r, cache=TRUE}
 # Very basic logistic model using Sex, Age, Class
 # full$std_Age <- as.numeric(scale(log(full$Age)))
 # #full$std_Age <- as.numeric(plogis((full$Age-18)/2))
@@ -230,7 +248,7 @@ classes <- full$Pclass[full$Set=="train"]
 fclass <- -1+2*as.numeric(classes==1)   # 1 for First
 sclass <- -1+2*as.numeric(classes==2)   # 1 for Second
 sex <- as.integer(as.factor(full$Sex[full$Set=="train"]))*2-3   # -1 female, +1 male
-
+nnetdata <- data.frame(age=age,sex=sex,fclass=fclass,sclass=sclass,y=y)
 
 test_y <- full$Survived[full$Set=="test"]   # 0 = Died, +1 = Survived
 test_age <- as.numeric(full$Age[full$Set=="test"])/40-1   # Age scaled from ~ -1 to +1
@@ -248,7 +266,9 @@ x <- data.frame(age=x_age,sex=x_sex,fclass=x_fclass,sclass=x_sclass)
 x$y <- numeric(nrow(x))
 ```
 
-Model Fitting
+## Part 4: Model Fitting
+
+First, let's set up the training control parameters for caret. We'll use repeated cross-validation on the training data:
 
 ```{r}
 
@@ -269,10 +289,39 @@ tc_acc<-trainControl(method="repeatedcv",
                  repeats=5,
                  classProbs=FALSE)
 
+```
 
+Now we can use caret to examine the cross-validated performance of different models across a range of meta-parameters. We'll measure performance usign the receiver-operator characteristic (which takes into account the 'confidence' of a model's choice).
+
+Why do we want to do this? Well first off, it's informative - we can get clues about how the models are fitting this particular dataset (and its properties), as well as getting a sense how different versions of these models vary in predictive power.
+
+But another reason we might take this approach - rather than, say, automating the procedure entirely and just selecting the best combination of meta-parameters to fit the test data with - is that we can potentially avoid some of the overfitting that could introduce. Instead of automatically picking the meta-parameters for the model that happen to perform best on the data we give it, we can check how performance varies across different settings and choose some that sit in a good "range".
+
+Let's now take a look at a few models we could apply to our data:
+
+### Logistic Regression
+
+```{r, cache=TRUE}
+
+# Simple Logistic Regression
+ptm <- proc.time()
+mod_log<-train(y~.,data=nnetdata,
+              method="glm",
+              family="binomial",
+              trControl=tc,
+              metric="ROC")
+proc.time() - ptm
+mod_log
+```
+
+A simple logistic regression gives us a nice baseline. No meta-parameters to adjust.
+
+### Neural Net
+
+```{r, cache=TRUE}
 
 # Neural Network
-nnGrid<-expand.grid(size=seq(3,7,1),decay=10^seq(-5,-0.5,0.5))
+nnGrid<-expand.grid(size=seq(2,5,1),decay=10^seq(-5,-0.5,0.5))
 ptm <- proc.time()
 mod_nn<-train(y~.,
                 data=nnetdata,
@@ -285,7 +334,13 @@ proc.time() - ptm
 mod_nn
 ggplot(mod_nn) + coord_trans(x = "log10")
 
+```
 
+The neural network performs pretty solidly across a range of values. Generally, smaller numbers of hidden units seem to be better, which makes sense with our limited feature set, but 3 units seems to be the useful minimum. This could change as we add more complex (interacting) features. A little weight decay (but not too much) seems to help, too, though performance overall is fairly robust to our choice of parameter here.
+
+### Random Forest
+
+```{r, cache=TRUE}
 # Random Forest
 rfGrid<-data.frame(mtry=seq(1,10,1))
 ptm <- proc.time()
@@ -298,7 +353,33 @@ mod_rf<-train(y~.,data=nnetdata,
 proc.time() - ptm
 mod_rf
 ggplot(mod_rf)
+```
 
+[Random forests](https://en.wikipedia.org/wiki/Random_forest) are hugely popular in machine learning, especially in contests like Kaggle. Partly I suspect that's because they're conceptually easy to understand, and tend to give very strong fits to the training data. I'm a little cautious of them myself, since they tend to overfit a little too often for my liking, and they're almost impossible to interpret. The scientist in me wants at least a bit of explanatory power from my models - often there's a simpler truth under all the noisy data and I'm not sure forests always add much predictive power over other methods in such situations. But they're certainly a strong tool to have.
+
+A quick glance of the random forest performances suggest we want our trees to select 2-3 predictors, which is roughly where we'd expect for classification (we have n=4 predictors, and a priori you would sample around n^0.5 for each tree).
+
+### Bagged Trees
+
+```{r, cache=TRUE}
+
+# Bagged Trees
+ptm <- proc.time()
+mod_bag<-train(y~.,data=nnetdata,
+              method="treebag",
+              trControl=tc,
+              tuneLength=2,
+              metric="ROC",
+              verbose=FALSE)
+proc.time() - ptm
+mod_bag
+```
+
+An [even simpler approach](https://en.wikipedia.org/wiki/Decision_tree_learning#Types) - but one more prone to overfitting - is to allow each tree to use all the predictors before combining them.
+
+### Gradient Boosted Trees
+
+```{r, cache=TRUE}
 
 # Gradient Boosted Trees
 gbmGrid<-expand.grid(interaction.depth=seq(1,5,1),n.trees=seq(50,250,50),shrinkage=seq(0.05,0.2,0.05))
@@ -312,10 +393,16 @@ mod_gbm<-train(y~.,data=nnetdata,
 proc.time() - ptm
 mod_gbm
 ggplot(mod_gbm)
+```
 
+[Gradient boosted trees](https://en.wikipedia.org/wiki/Gradient_boosting) do best with depth 2 or more, and lower shrinkage of 0.05-0.10. Adding iterations above 100 doesn't look like it's worth it, and may even be detrimental at higher shrinkage rates. 
+
+### Support Vector Machine
+
+```{r, cache=TRUE}
 
 # Support Vector Machine
-svmGrid<-expand.grid(C=2^seq(-5,-2,1),sigma=2^seq(-3,3,1))
+svmGrid<-expand.grid(C=2^seq(-7,-3,1),sigma=2^seq(-3,3,1))
 ptm <- proc.time()
 mod_svm<-train(y~.,data=nnetdata,
               method="svmRadial",
@@ -326,7 +413,13 @@ mod_svm<-train(y~.,data=nnetdata,
 proc.time() - ptm
 mod_svm
 ggplot(mod_svm) + coord_trans(x = "log10")
+```
 
+Using a [radial support vector machine](https://en.wikipedia.org/wiki/Support_vector_machine#Nonlinear_classification) (under the assumption that we want a smooth classifier, rather than a 'jagged' one) we get decent results for lower cost functions, and values of sigma around 0.5. Interestingly, though, we also get decent results using a much larger kernel, with sigma around 8, and an automated script would select this as the 'best' option. That might not make so much sense in general though, since 8 is an order of magnitude greater than the variance in our normalised feature set.
+
+### Discriminant Analysis
+
+```{r, cache=TRUE}
 
 # Regularized Discriminant Analysis (very slow)
 rdaGrid<-expand.grid(gamma=seq(0,0.08,0.02),lambda=seq(0.5,2.5,0.5))
@@ -340,31 +433,13 @@ mod_rda<-train(y~.,data=nnetdata,
 proc.time() - ptm
 mod_rda
 ggplot(mod_rda)
+```
 
+[Regularized discriminant analysis](https://en.wikipedia.org/wiki/Linear_discriminant_analysis) generally gives us similar power to the SVM and is pretty robust to the choice of gamma & lambda. It's sensitive to deviations from normality in the input data though (such deviations are likely, for example, with the passenger class features) and tends to take a longer time to run than most of our other options.
 
-# Simple Logistic Regression
-ptm <- proc.time()
-mod_log<-train(y~.,data=nnetdata,
-              method="glm",
-              family="binomial",
-              trControl=tc,
-              metric="ROC")
-proc.time() - ptm
-mod_log
+### Adaboost
 
-
-# Bagged Trees
-ptm <- proc.time()
-mod_bag<-train(y~.,data=nnetdata,
-              method="treebag",
-              trControl=tc,
-              tuneLength=2,
-              metric="ROC",
-              verbose=FALSE)
-proc.time() - ptm
-mod_bag
-ggplot(mod_bag)
-
+```{r, cache=TRUE}
 
 # Adaboost (slow)
 adaGrid<-expand.grid(iter=seq(100,700,300),maxdepth=seq(2,5,1),nu=2^seq(-5,-1,1))
@@ -378,7 +453,11 @@ mod_ada<-train(y~.,data=nnetdata,
 proc.time() - ptm
 mod_ada
 ggplot(mod_ada)
+```
 
+### K Nearest Neighbours
+
+```{r, cache=TRUE}
 
 # K Nearest Neighbours
 ptm <- proc.time()
@@ -389,8 +468,12 @@ mod_knn<-train(y~.,data=nnetdata,
               verbose=FALSE)
 proc.time() - ptm
 mod_knn
-ggplot(mod_knn)
+```
 
+K nearest neighbours is another simple and well-known algorithm that's useful for benchmarking the more complex ones.
+
+
+```{r, cache=TRUE}
 
 # Bagged flexible discriminant analysis
 bfdGrid<-expand.grid(nprune=seq(5,20,5),degree=seq(1,3,1))
@@ -403,7 +486,9 @@ mod_bfd<-train(y~.,data=nnetdata,
 proc.time() - ptm
 mod_bfd
 ggplot(mod_bfd)
+```
 
+```{r, cache=TRUE}
 
 resp_gbm<-predict(mod_gbm,nnetdata,type="prob")
 resp_rf<-predict(mod_rf,nnetdata,type="prob")
@@ -474,7 +559,9 @@ mod_nn<-train(y~.,
                 tuneGrid=nnGrid,
                 trace=FALSE)
 proc.time() - ptm
+```
 
+```{r, cache=TRUE}
 # Random Forest
 rfGrid<-data.frame(mtry=seq(1,5,1))
 mod_rf<-train(y~.,data=nnetdata,
@@ -484,7 +571,9 @@ mod_rf<-train(y~.,data=nnetdata,
               trace=FALSE)
 proc.time() - ptm
 
+```
 
+```{r, cache=TRUE}
 # Gradient Boosted Trees
 gbmGrid<-expand.grid(interaction.depth=seq(2,4,1),n.trees=seq(25,150,25),shrinkage=seq(0.05,0.15,0.05))
 mod_gbm<-train(y~.,data=nnetdata,
@@ -493,7 +582,9 @@ mod_gbm<-train(y~.,data=nnetdata,
               tuneGrid=gbmGrid,
               verbose=FALSE)
 proc.time() - ptm
+```
 
+```{r, cache=TRUE}
 # Support Vector Machine
 svmGrid<-expand.grid(C=2^seq(-6,-4,1),sigma=2^seq(-2,4,1))
 mod_svm<-train(y~.,data=nnetdata,
@@ -502,7 +593,9 @@ mod_svm<-train(y~.,data=nnetdata,
               tuneGrid=svmGrid,
               verbose=FALSE)
 proc.time() - ptm
+```
 
+```{r, cache=TRUE}
 
 # Regularized Discriminant Analysis (very slow)
 rdaGrid<-expand.grid(gamma=seq(0,0.08,0.02),lambda=seq(0,3,1))
@@ -512,7 +605,9 @@ mod_rda<-train(y~.,data=nnetdata,
               tuneGrid=rdaGrid,
               verbose=FALSE)
 proc.time() - ptm
+```
 
+```{r, cache=TRUE}
 
 # Simple Logistic Regression
 mod_log<-train(y~.,data=nnetdata,
@@ -520,7 +615,9 @@ mod_log<-train(y~.,data=nnetdata,
               family="binomial",
               trControl=tc_acc)
 proc.time() - ptm
+```
 
+```{r, cache=TRUE}
 
 # Bagged Trees
 mod_bag<-train(y~.,data=nnetdata,
@@ -528,7 +625,9 @@ mod_bag<-train(y~.,data=nnetdata,
               trControl=tc_acc,
               verbose=FALSE)
 proc.time() - ptm
+```
 
+```{r, cache=TRUE}
 
 # K Nearest Neighbours
 knnGrid<-expand.grid(kmax=seq(6,18,3),distance=seq(1,5,1),kernel="optimal")
@@ -538,7 +637,9 @@ mod_knn<-train(y~.,data=nnetdata,
               tuneGrid=knnGrid,
               verbose=FALSE)
 proc.time() - ptm
+```
 
+```{r, cache=TRUE}
 
 # Bagged flexible discriminant analysis
 bfdGrid<-expand.grid(nprune=seq(3,12,3),degree=seq(1,4,1))
@@ -547,7 +648,9 @@ mod_bfd<-train(y~.,data=nnetdata,
               trControl=tc_acc,
               tuneGrid=bfdGrid)
 proc.time() - ptm
+```
 
+```{r, cache=TRUE}
 
 
 raw_gbm<-predict(mod_gbm,nnetdata,type="raw")
@@ -590,7 +693,9 @@ stackdata <- data.frame(gbm=prob_gbm[,1],
                   rda=prob_rda[,1],
                   knn=raw_knn,
                   y=nnetdata$y)
+```
 
+```{r, cache=TRUE}
 
 nnGrid2<-expand.grid(size=seq(3,6,1),decay=10^seq(-3,0.5,0.5))
 ptm<-proc.time()
